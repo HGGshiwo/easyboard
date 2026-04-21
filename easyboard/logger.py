@@ -3,36 +3,56 @@ import csv
 import time
 import atexit
 import json
-
+from datetime import datetime
 
 class SummaryWriter:
     def __init__(
         self,
-        log_dir="logs",
-        run_path="default_exp/seed_0",
+        log_dir="logs/default_exp",
+        tags=None,
         flush_size=1000,
         flush_secs=2.0,
     ):
         """
-        :param run_path: 支持任意深度的相对路径！例如 "ResNet/CIFAR/lr_0.01/seed_1"
+        Initializes the SummaryWriter.
+        
+        :param log_dir: Absolute or relative path for storage (e.g., "logs/20231024_PPO").
+                        This is only used for physical storage and does not affect grouping.
+        :param tags: List of string tags to identify and group the run (e.g., ["PPO", "lr_0.01", "seed_1"]).
         """
-        # 自动解析层级目录
-        self.dir = os.path.join(log_dir, run_path)
-        os.makedirs(self.dir, exist_ok=True)
-        self.csv_path = os.path.join(self.dir, "metrics.csv")
-        self.config_path = os.path.join(self.dir, "config.json")
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        self.tags = tags if tags is not None else []
+        
+        # Generate timestamped metric file for elegant file management
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.csv_path = os.path.join(self.log_dir, f"metrics_{timestamp_str}.csv")
+        self.config_path = os.path.join(self.log_dir, "config.json")
+        self.meta_path = os.path.join(self.log_dir, "run_meta.json")
 
         self.buffer = []
         self.flush_size = flush_size
         self.flush_secs = flush_secs
         self.last_flush_time = time.time()
 
+        self._save_metadata()
+        self._initialize_csv()
+
+        atexit.register(self.flush)
+
+    def _save_metadata(self):
+        """Saves run tags to a meta file for the dashboard to read."""
+        meta_data = {"tags": self.tags}
+        with open(self.meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta_data, f, indent=4, ensure_ascii=False)
+
+    def _initialize_csv(self):
         if not os.path.exists(self.csv_path):
             with open(self.csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["timestamp", "type", "tag", "step", "value"])
-
-        atexit.register(self.flush)
+                # Renamed 'tag' to 'metric_name' to avoid confusion with run tags
+                writer.writerow(["timestamp", "type", "metric_name", "step", "value"])
 
     def add_config(self, config_dict):
         existing_config = {}
@@ -40,18 +60,19 @@ class SummaryWriter:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     existing_config = json.load(f)
-            except:
+            except Exception:
                 pass
+        
         existing_config.update(config_dict)
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(existing_config, f, indent=4, ensure_ascii=False)
 
-    def add_scalar(self, tag, value, step):
-        self.buffer.append([time.time(), "scalar", tag, step, float(value)])
+    def add_scalar(self, metric_name, value, step):
+        self.buffer.append([time.time(), "scalar", metric_name, step, float(value)])
         self._check_flush()
 
-    def add_summary(self, tag, value):
-        self.buffer.append([time.time(), "summary", tag, -1, float(value)])
+    def add_summary(self, metric_name, value):
+        self.buffer.append([time.time(), "summary", metric_name, -1, float(value)])
         self._check_flush()
 
     def _check_flush(self):

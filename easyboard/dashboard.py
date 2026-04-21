@@ -6,8 +6,15 @@ import os
 import glob
 import json
 
-# === 页面配置 ===
+# === Page Configuration ===
 st.set_page_config(layout="wide", page_title="EasyBoard Analytics")
+
+# --- Session State Initialization for Dynamic Groups ---
+if 'group_counter' not in st.session_state:
+    st.session_state.group_counter = 1
+if 'custom_groups_state' not in st.session_state:
+    # Initialize with one empty group
+    st.session_state.custom_groups_state = [{"id": 0}]
 
 def hex_to_rgba(hex_color, opacity=0.2):
     hex_color = hex_color.lstrip('#')
@@ -18,165 +25,231 @@ def hex_to_rgba(hex_color, opacity=0.2):
 
 @st.cache_data(ttl=2)
 def load_data(base_dir):
-    files = glob.glob(os.path.join(base_dir, "**", "metrics.csv"), recursive=True)
-    if not files: return None
+    files = glob.glob(os.path.join(base_dir, "**", "metrics_*.csv"), recursive=True)
+    if not files: 
+        return pd.DataFrame(), pd.DataFrame(), [], {}
     
-    df_list = []
+    runs_data = []
+    configs_data = []
+    all_tags = set()
+    run_dict = {}  
+    
+    dir_to_files = {}
     for f in files:
-        dir_path = os.path.dirname(f)
-        # 获取相对路径，并统一替换为正斜杠 '/'，例如 "PPO/Warehouse/lr_0.01/seed_1"
-        rel_path = os.path.relpath(dir_path, base_dir).replace('\\', '/')
-        if rel_path == '.': rel_path = 'Root'
+        d = os.path.dirname(f)
+        dir_to_files.setdefault(d, []).append(f)
         
-        df = pd.read_csv(f)
-        df['rel_path'] = rel_path
+    for d, fs in dir_to_files.items():
+        meta_path = os.path.join(d, "run_meta.json")
+        run_tags = []
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as m:
+                    meta = json.load(m)
+                    run_tags = meta.get("tags", [])
+            except Exception:
+                pass
         
-        # 为了方便左侧树状菜单展示，拆分出“父目录”和“最终运行名(如seed)”
-        df['parent_path'] = os.path.dirname(rel_path) if '/' in rel_path else 'Root'
-        df['run_name'] = os.path.basename(rel_path)
+        for t in run_tags:
+            all_tags.add(t)
+            
+        run_dict[d] = run_tags
+            
+        df_list = []
+        for f in fs:
+            try:
+                temp_df = pd.read_csv(f)
+                if 'tag' in temp_df.columns:
+                    temp_df.rename(columns={'tag': 'metric_name'}, inplace=True)
+                df_list.append(temp_df)
+            except Exception:
+                pass
         
-        df_list.append(df)
-    return pd.concat(df_list, ignore_index=True)
+        if df_list:
+            run_df = pd.concat(df_list, ignore_index=True)
+            run_df['log_dir'] = d
+            run_df['run_tags'] = [tuple(run_tags)] * len(run_df)
+            runs_data.append(run_df)
+            
+        config_path = os.path.join(d, "config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as c:
+                    cfg = json.load(c)
+                    cfg['log_dir'] = d
+                    cfg['run_tags'] = ", ".join(run_tags)
+                    configs_data.append(cfg)
+            except Exception:
+                pass
+                
+    if not runs_data:
+        return pd.DataFrame(), pd.DataFrame(), [], {}
+        
+    df = pd.concat(runs_data, ignore_index=True)
+    df_configs = pd.DataFrame(configs_data) if configs_data else pd.DataFrame()
+    return df, df_configs, sorted(list(all_tags)), run_dict
 
-@st.cache_data(ttl=2)
-def load_configs(base_dir):
-    files = glob.glob(os.path.join(base_dir, "**", "config.json"), recursive=True)
-    if not files: return pd.DataFrame()
-    data = []
-    for f in files:
-        dir_path = os.path.dirname(f)
-        rel_path = os.path.relpath(dir_path, base_dir).replace('\\', '/')
-        if rel_path == '.': rel_path = 'Root'
-        try:
-            with open(f, 'r', encoding='utf-8') as fp:
-                cfg = json.load(fp)
-                cfg['rel_path'] = rel_path
-                data.append(cfg)
-        except: pass
-    return pd.DataFrame(data)
 
 base_dir = os.environ.get('EASYBOARD_LOGDIR', 'logs')
-df = load_data(base_dir)
-df_configs = load_configs(base_dir)
+df, df_configs, all_tags, run_dict = load_data(base_dir)
 
-st.title("📊 EasyBoard Analytics")
+# ================= Top Bar: Title & Refresh Button =================
+col_title, col_btn = st.columns([0.88, 0.12])
+with col_title:
+    st.title("EasyBoard Analytics")
+with col_btn:
+    # Adding margin to vertically align the button with the title
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    if st.button("Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-if df is None or df.empty:
-    st.warning("📭 No data found. Please run your experiments first.")
+if df.empty:
+    st.warning("No data found. Please run your experiments first.")
     st.stop()
 
-# ================= 侧边栏：全局控制台 =================
-st.sidebar.header("Global Controls")
-if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+
+# ================= Sidebar: Controls & Logic =================
+
+# --- 1. Grouping Engine ---
+st.sidebar.subheader("1. Grouping Configuration")
+group_mode = st.sidebar.radio("Grouping Mode", ["Custom Groups", "Auto Group by Tags"], label_visibility="collapsed")
+
+groupby_tags = []
+custom_groups = []
+
+if group_mode == "Auto Group by Tags":
+    st.sidebar.caption("Exact tag matches will be grouped automatically.")
+    groupby_tags = st.sidebar.multiselect("Select Tags for Auto Group", all_tags)
+else:
+    st.sidebar.caption("Define group name (left) and required tags (center).")
+    
+    # Iterate over dynamic state to render rows
+    for i, grp in enumerate(st.session_state.custom_groups_state):
+        gid = grp['id']
+        c1, c2, c3 = st.sidebar.columns([3, 5, 1.5])
+        
+        with c1:
+            g_name = st.text_input("Name", f"Group_{i+1}", key=f"g_name_{gid}", label_visibility="collapsed")
+        with c2:
+            g_tags = st.multiselect("Tags", all_tags, key=f"g_tags_{gid}", label_visibility="collapsed")
+        with c3:
+            # Delete button
+            if st.button("Del", key=f"del_{gid}", use_container_width=True):
+                # Remove the item from session state and rerun
+                st.session_state.custom_groups_state = [g for g in st.session_state.custom_groups_state if g['id'] != gid]
+                st.rerun()
+                
+        custom_groups.append({"name": g_name, "tags": set(g_tags)})
+
+    # Add Group Button
+    if st.sidebar.button("+ Add Group", use_container_width=True):
+        st.session_state.group_counter += 1
+        st.session_state.custom_groups_state.append({"id": st.session_state.group_counter})
+        st.rerun()
+
+show_ungrouped = st.sidebar.checkbox("Show Ungrouped Runs", value=True)
 
 st.sidebar.markdown("---")
 
-# --- 核心魔法 1：动态聚合层级控制器 ---
-st.sidebar.subheader("1. Aggregation Level")
-# st.sidebar.caption("选择在目录的哪一层计算均值和方差")
-
-# 计算所有路径中的最大深度 (根据 '/' 的数量)
-max_depth = int(df['rel_path'].apply(lambda x: len(x.split('/'))).max())
-
-# 动态生成聚合选项
-agg_options = {}
-sample_path = df['rel_path'].iloc[0].split('/')
-for depth in range(1, max_depth):
-    example = "/".join(sample_path[:depth])
-    agg_options[depth] = f"Level {depth} (e.g., {example})"
-agg_options[max_depth] = f"Level {max_depth} (No Aggregation)"
-
-# 全局聚合深度选择器
-selected_depth = st.sidebar.radio(
-    "Group by directory depth:",
-    options=list(agg_options.keys()),
-    format_func=lambda x: agg_options[x],
-    index=max_depth - 2 if max_depth > 1 else 0 # 默认聚合倒数第二层 (通常是相同参数的不同seed)
-)
+# --- 2. Filtering Engine ---
+st.sidebar.subheader("2. Data Filtering")
+st.sidebar.caption("Runs containing these tags will be selected by default.")
+global_filter_tags = st.sidebar.multiselect("Filter by Tags (AND Logic):", all_tags)
 
 st.sidebar.markdown("---")
 
-# --- 核心魔法 2：树状剔除菜单 (只做筛选，不干预聚合) ---
-st.sidebar.subheader("2. Run Filters")
-# st.sidebar.caption("取消勾选以剔除异常数据")
+# --- 3. Experiment List Selection ---
+st.sidebar.subheader("3. Experiments")
+st.sidebar.caption("Manually include or exclude specific runs.")
 
-selected_runs_paths = []
-# 按父目录归类来生成折叠菜单
-all_parents = sorted(df['parent_path'].unique().tolist())
+selected_runs = []
+for log_dir, tags in run_dict.items():
+    matches_filter = set(global_filter_tags).issubset(set(tags)) if global_filter_tags else True
+    display_name = f"{os.path.basename(log_dir)} {tags}"
+    
+    if st.sidebar.checkbox(display_name, value=matches_filter, key=f"chk_{log_dir}"):
+        selected_runs.append(log_dir)
 
-for parent in all_parents:
-    with st.sidebar.expander(f"📁 {parent}", expanded=True):
-        runs = sorted(df[df['parent_path'] == parent]['run_name'].unique().tolist())
-        for r in runs:
-            # Checkbox的默认状态为 True
-            if st.checkbox(f"📄 {r}", value=True, key=f"chk_{parent}_{r}"):
-                # 如果选中，则将该运行的完整相对路径加入白名单
-                full_path = f"{parent}/{r}" if parent != 'Root' else r
-                selected_runs_paths.append(full_path)
-
-if not selected_runs_paths:
-    st.info("Please select at least one run from the sidebar.")
+if not selected_runs:
+    st.info("No runs selected. Please select runs from the sidebar.")
     st.stop()
 
-# 1. 物理剔除未选中的数据
-df_filtered = df[df['rel_path'].isin(selected_runs_paths)].copy()
 
-# 2. 核心魔法 3：根据选择的 depth，动态截取路径作为画图的 Label (Group By 的 Key)
-def generate_plot_label(path, depth):
-    parts = path.split('/')
-    if depth >= len(parts): return path
-    return "/".join(parts[:depth])
+# ================= Data Processing =================
+df_filtered = df[df['log_dir'].isin(selected_runs)].copy()
 
-df_filtered['plot_label'] = df_filtered['rel_path'].apply(lambda x: generate_plot_label(x, selected_depth))
+def get_groups(run_tags_tuple):
+    run_tags = set(run_tags_tuple)
+    if group_mode == "Auto Group by Tags":
+        if not groupby_tags:
+            return ["All Runs"]
+        overlap = sorted(list(run_tags.intersection(set(groupby_tags))))
+        return ["_".join(overlap)] if overlap else ["Ungrouped"]
+    else:
+        assigned = []
+        for g in custom_groups:
+            if not g["tags"]:
+                continue
+            if g["tags"].issubset(run_tags):
+                assigned.append(g["name"])
+        return assigned if assigned else ["Ungrouped"]
+
+df_filtered['group_name'] = df_filtered['run_tags'].apply(get_groups)
+
+# Explode expands lists into multiple rows for overlapping groups
+df_filtered = df_filtered.explode('group_name')
+
+if not show_ungrouped:
+    df_filtered = df_filtered[df_filtered['group_name'] != "Ungrouped"]
+
+if df_filtered.empty:
+    st.info("No data available after grouping logic.")
+    st.stop()
 
 colors = px.colors.qualitative.Plotly
 
-# ================= 主界面：图表渲染 =================
 
-# --- 模块 1：Config 参数表 ---
-st.header("📝 Configurations")
+# ================= Main View Rendering =================
+
+# --- Module 1: Configurations ---
+st.header("Configurations")
 if not df_configs.empty:
-    df_cfg_filtered = df_configs[df_configs['rel_path'].isin(selected_runs_paths)].copy()
+    df_cfg_filtered = df_configs[df_configs['log_dir'].isin(selected_runs)].copy()
     if not df_cfg_filtered.empty:
-        # 为了方便看，加上当前聚合的标签
-        df_cfg_filtered['Belongs_to_Group'] = df_cfg_filtered['rel_path'].apply(lambda x: generate_plot_label(x, selected_depth))
-        cols = ['Belongs_to_Group', 'rel_path'] + [c for c in df_cfg_filtered.columns if c not in ['Belongs_to_Group', 'rel_path']]
+        cols = ['log_dir', 'run_tags'] + [c for c in df_cfg_filtered.columns if c not in ['log_dir', 'run_tags']]
         st.dataframe(df_cfg_filtered[cols], use_container_width=True, hide_index=True)
 else:
     st.info("No configurations logged.")
 
 st.markdown("---")
 
-# --- 模块 2：时间序列 (动态均值与方差阴影) ---
-st.header("📈 Time-Series Metrics")
+# --- Module 2: Time-Series Metrics ---
+st.header("Time-Series Metrics")
 df_scalar = df_filtered[df_filtered['type'] == 'scalar']
 
 if not df_scalar.empty:
-    scalar_tags = df_scalar['tag'].unique()
+    metric_names = df_scalar['metric_name'].unique()
     cols = st.columns(2)
     
-    for i, tag in enumerate(scalar_tags):
+    for i, metric in enumerate(metric_names):
         with cols[i % 2]:
             fig = go.Figure()
-            tag_data = df_scalar[df_scalar['tag'] == tag]
+            metric_data = df_scalar[df_scalar['metric_name'] == metric]
             
-            # 使用我们刚刚动态生成的 plot_label 进行统计聚合
-            agg_data = tag_data.groupby(['plot_label', 'step'])['value'].agg(['mean', 'std']).reset_index()
+            agg_data = metric_data.groupby(['group_name', 'step'])['value'].agg(['mean', 'std']).reset_index()
             agg_data['std'] = agg_data['std'].fillna(0)
             
-            unique_labels = sorted(agg_data['plot_label'].unique())
-            for j, label in enumerate(unique_labels):
-                lbl_data = agg_data[agg_data['plot_label'] == label]
+            unique_groups = sorted(agg_data['group_name'].unique())
+            for j, grp in enumerate(unique_groups):
+                grp_data = agg_data[agg_data['group_name'] == grp].sort_values('step')
                 
-                x = lbl_data['step']
-                y_mean = lbl_data['mean']
-                y_std = lbl_data['std']
+                x = grp_data['step']
+                y_mean = grp_data['mean']
+                y_std = grp_data['std']
                 
                 base_color = colors[j % len(colors)]
                 
-                # 如果方差 > 0 (说明这条线融合了多个数据源)，则画半透明阴影
                 if y_std.max() > 0:
                     fill_color = hex_to_rgba(base_color, 0.2)
                     y_upper = y_mean + y_std
@@ -187,36 +260,35 @@ if not df_scalar.empty:
                         hoverinfo="skip", showlegend=False
                     ))
                 
-                # 画主线
                 fig.add_trace(go.Scatter(
-                    x=x, y=y_mean, mode='lines', name=label, line=dict(color=base_color, width=2),
-                    hovertemplate=(f"<b>{label}</b><br>Step: %{{x}}<br>Mean: %{{y:.4f}}<br>Std: ±%{{customdata:.4f}}<extra></extra>"),
+                    x=x, y=y_mean, mode='lines', name=grp, line=dict(color=base_color, width=2),
+                    hovertemplate=(f"<b>{grp}</b><br>Step: %{{x}}<br>Mean: %{{y:.4f}}<br>Std: ±%{{customdata:.4f}}<extra></extra>"),
                     customdata=y_std
                 ))
                 
             fig.update_layout(
-                title=dict(text=tag, font=dict(size=16)), hovermode="x unified",
+                title=dict(text=metric, font=dict(size=16)), hovermode="x unified",
                 margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, use_container_width=True)
 
-# --- 模块 3：非时间柱状图 (动态误差棒) ---
+# --- Module 3: Summary Metrics ---
 st.markdown("---")
-st.header("🏆 Summary Metrics")
+st.header("Summary Metrics")
 df_summary = df_filtered[df_filtered['type'] == 'summary']
 
 if not df_summary.empty:
-    summary_tags = df_summary['tag'].unique()
-    cols2 = st.columns(len(summary_tags) if len(summary_tags) > 0 else 1)
+    summary_metrics = df_summary['metric_name'].unique()
+    cols2 = st.columns(len(summary_metrics) if len(summary_metrics) > 0 else 1)
     
-    for i, tag in enumerate(summary_tags):
-        with cols2[i]:
-            tag_data = df_summary[df_summary['tag'] == tag]
-            agg_data = tag_data.groupby('plot_label')['value'].agg(['mean', 'std']).reset_index()
+    for i, metric in enumerate(summary_metrics):
+        with cols2[i % len(cols2)]:
+            metric_data = df_summary[df_summary['metric_name'] == metric]
+            agg_data = metric_data.groupby('group_name')['value'].agg(['mean', 'std']).reset_index()
             agg_data['std'] = agg_data['std'].fillna(0)
             
             fig = px.bar(
-                agg_data, x='plot_label', y='mean', color='plot_label', error_y='std',
+                agg_data, x='group_name', y='mean', color='group_name', error_y='std',
                 color_discrete_sequence=colors
             )
             fig.update_traces(
@@ -224,7 +296,7 @@ if not df_summary.empty:
                 customdata=agg_data[['std']]
             )
             fig.update_layout(
-                title=dict(text=tag, font=dict(size=16)), showlegend=False, 
+                title=dict(text=metric, font=dict(size=16)), showlegend=False, 
                 xaxis_title="", yaxis_title="Value", margin=dict(l=20, r=20, t=40, b=20)
             )
             st.plotly_chart(fig, use_container_width=True)

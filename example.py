@@ -20,8 +20,9 @@ seeds = [1, 2, 3]
 for algo in algorithms:
     for seed in seeds:
         # 自由嵌套目录！例如：RoboNav_Task/PPO/seed_1
-        run_path = f"RoboNav_Task/{algo}/seed_{seed}"
-        writer = SummaryWriter(log_dir=LOG_DIR, run_path=run_path)
+        time.sleep(1.0)
+        time_str = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        writer = SummaryWriter(log_dir=LOG_DIR + f"/{time_str}", tags=[algo, f"seed_{seed}"], flush_size=500, flush_secs=1.0)
         
         # 记录实验参数（自动汇集成表格）
         lr = 0.01 if algo == "PPO" else 0.005
@@ -35,6 +36,26 @@ for algo in algorithms:
         # 将 writer 和对应的算法名存起来
         writers.append((algo, writer))
 
+
+for algo in algorithms:
+    for seed in seeds:
+        # 自由嵌套目录！例如：RoboNav_Task/PPO/seed_1
+        time.sleep(1.0)
+        time_str = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        writer = SummaryWriter(log_dir=LOG_DIR + f"/{time_str}", tags=[f"seed_{seed}"])
+        
+        # 记录实验参数（自动汇集成表格）
+        lr = 0.01 if algo == "PPO" else 0.005
+        writer.add_config({
+            "Algorithm": algo,
+            "Learning_Rate": lr,
+            "Batch_Size": 64 if algo == "PPO" else 128,
+            "Environment": "Warehouse_v2"
+        })
+        
+        # 将 writer 和对应的算法名存起来
+        writers.append((algo, writer))
+        
 # ==========================================
 # 2. 模拟训练主循环 (时间序列数据)
 # ==========================================
