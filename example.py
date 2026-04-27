@@ -1,6 +1,7 @@
-import time
-import random
 import math
+import random
+import time
+
 from easyboard import SummaryWriter
 
 print("🚀 初始化实验中...")
@@ -22,17 +23,24 @@ for algo in algorithms:
         # 自由嵌套目录！例如：RoboNav_Task/PPO/seed_1
         time.sleep(1.0)
         time_str = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
-        writer = SummaryWriter(log_dir=LOG_DIR + f"/{time_str}", tags=[algo, f"seed_{seed}"], flush_size=500, flush_secs=1.0)
-        
+        writer = SummaryWriter(
+            log_dir=LOG_DIR + f"/{time_str}",
+            tags=[algo, f"seed_{seed}"],
+            flush_size=500,
+            flush_secs=1.0,
+        )
+
         # 记录实验参数（自动汇集成表格）
         lr = 0.01 if algo == "PPO" else 0.005
-        writer.add_config({
-            "Algorithm": algo,
-            "Learning_Rate": lr,
-            "Batch_Size": 64 if algo == "PPO" else 128,
-            "Environment": "Warehouse_v2"
-        })
-        
+        writer.add_config(
+            {
+                "Algorithm": algo,
+                "Learning_Rate": lr,
+                "Batch_Size": 64 if algo == "PPO" else 128,
+                "Environment": "Warehouse_v2",
+            }
+        )
+
         # 将 writer 和对应的算法名存起来
         writers.append((algo, writer))
 
@@ -43,19 +51,21 @@ for algo in algorithms:
         time.sleep(1.0)
         time_str = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
         writer = SummaryWriter(log_dir=LOG_DIR + f"/{time_str}", tags=[f"seed_{seed}"])
-        
+
         # 记录实验参数（自动汇集成表格）
         lr = 0.01 if algo == "PPO" else 0.005
-        writer.add_config({
-            "Algorithm": algo,
-            "Learning_Rate": lr,
-            "Batch_Size": 64 if algo == "PPO" else 128,
-            "Environment": "Warehouse_v2"
-        })
-        
+        writer.add_config(
+            {
+                "Algorithm": algo,
+                "Learning_Rate": lr,
+                "Batch_Size": 64 if algo == "PPO" else 128,
+                "Environment": "Warehouse_v2",
+            }
+        )
+
         # 将 writer 和对应的算法名存起来
         writers.append((algo, writer))
-        
+
 # ==========================================
 # 2. 模拟训练主循环 (时间序列数据)
 # ==========================================
@@ -66,7 +76,7 @@ for step in range(total_steps):
     for algo, writer in writers:
         # 制造一些逼真的带噪声的假数据
         noise = random.uniform(-0.1, 0.1)
-        
+
         if algo == "PPO":
             # PPO 收敛慢一点，方差大一点
             loss = 5.0 * math.exp(-step / 20.0) + random.uniform(0, 0.5)
@@ -79,10 +89,10 @@ for step in range(total_steps):
         # 高频记录！后台会自动缓冲合并，不会卡顿
         writer.add_scalar("Training/Loss", loss, step)
         writer.add_scalar("Training/Reward", reward, step)
-        
+
     # 稍微睡一下，模拟真实训练耗时
     # 这时你可以去网页点左侧的 "Force Refresh Data" 看实时的曲线生长！
-    time.sleep(0.05) 
+    time.sleep(0.05)
 
 # ==========================================
 # 3. 模拟训练结束 (记录最终非时间结果)
@@ -92,10 +102,10 @@ for algo, writer in writers:
     # 假设 SAC 的成功率稍高一些
     base_success = 0.7 if algo == "PPO" else 0.9
     final_success_rate = base_success + random.uniform(-0.1, 0.1)
-    
+
     # 记录单个数值，生成带误差棒的柱状图
     writer.add_summary("Metrics/Final_Success_Rate", final_success_rate)
-    
+
     # 安全关闭，确保所有数据刷入硬盘
     writer.close()
 

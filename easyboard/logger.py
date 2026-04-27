@@ -1,9 +1,10 @@
-import os
-import csv
-import time
 import atexit
+import csv
 import json
+import os
+import time
 from datetime import datetime
+
 
 class SummaryWriter:
     def __init__(
@@ -15,16 +16,16 @@ class SummaryWriter:
     ):
         """
         Initializes the SummaryWriter.
-        
+
         :param log_dir: Absolute or relative path for storage (e.g., "logs/20231024_PPO").
                         This is only used for physical storage and does not affect grouping.
         :param tags: List of string tags to identify and group the run (e.g., ["PPO", "lr_0.01", "seed_1"]).
         """
         self.log_dir = log_dir
         os.makedirs(self.log_dir, exist_ok=True)
-        
+
         self.tags = tags if tags is not None else []
-        
+
         # Generate timestamped metric file for elegant file management
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_path = os.path.join(self.log_dir, f"metrics_{timestamp_str}.csv")
@@ -62,7 +63,7 @@ class SummaryWriter:
                     existing_config = json.load(f)
             except Exception:
                 pass
-        
+
         existing_config.update(config_dict)
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(existing_config, f, indent=4, ensure_ascii=False)

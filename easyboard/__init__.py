@@ -1,2 +1,3 @@
 from .logger import SummaryWriter
-__all__ = ['SummaryWriter']
+
+__all__ = ["SummaryWriter"]
